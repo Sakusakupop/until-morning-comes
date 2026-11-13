@@ -1,0 +1,65 @@
+name: Discord PR Notification
+
+on:
+  # Webhook Secret を使うため base 側の workflow を実行する。PR のコードは checkout しない
+  pull_request_target:
+    branches: [main]
+    types: [opened, closed]
+
+# Discord 通知にリポジトリ操作の権限は不要
+permissions: {}
+
+jobs:
+  notify:
+    # 作成時と、マージされたクローズ時だけ通知する
+    if: github.event.action == 'opened' || (github.event.action == 'closed' && github.event.pull_request.merged == true)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send Discord notification
+        uses: actions/github-script@v7
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        with:
+          script: |
+            // Secret が未設定なら送信できないことを明示する
+            const webhookUrl = process.env.DISCORD_WEBHOOK_URL;
+
+            // Discord Webhook URL が設定されていない場合は失敗として返す
+            if (!webhookUrl) {
+              core.setFailed('DISCORD_WEBHOOK_URL secret is not set.');
+              return;
+            }
+
+            // イベント情報をデータとして読む。PR の値を Shell コードへ埋め込まない
+            const pullRequest = context.payload.pull_request;
+            const isOpened = context.payload.action === 'opened';
+            const heading = isOpened
+              ? '🚀 **新しい PR が作成されました。レビューをお願いします！**'
+              : '✨ **PR がマージされました。お疲れさまでした！**';
+            const actorLabel = isOpened ? '作成者' : 'マージ担当';
+
+            // PR タイトル内の Discord Markdown を無効化する
+            const escapeMarkdown = (value) => value.replace(/[\\_*~|`>\[\]]/g, '\\$&');
+            const safeTitle = escapeMarkdown(pullRequest.title);
+            const message = [
+              heading,
+              '',
+              `**${actorLabel}:** ${context.actor}`,
+              `**PR:** ${safeTitle}`,
+              pullRequest.html_url
+            ].join('\n');
+
+            // 全体メンションを抑止し、Discord の HTTP エラーは Actions に失敗として返す
+            const response = await fetch(webhookUrl, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                content: message,
+                allowed_mentions: { parse: [] }
+              })
+            });
+
+            if (!response.ok) {
+              const responseBody = await response.text();
+              core.setFailed(`Discord webhook returned ${response.status}: ${responseBody.slice(0, 500)}`);
+            }
