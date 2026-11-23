@@ -19,4 +19,53 @@ jobs:
           persist-credentials: false
 
       - name: Check Unity asset metadata pairs
-        run: python3 .github/scripts/check-unity-meta.py
+        run: |
+          python3 - <<'PY'
+          import os
+          import subprocess
+          import sys
+          from pathlib import Path
+
+          assets_path = "until-morning-comes/Assets"
+          result = subprocess.run(
+              ["git", "ls-files", "-z", "--", f"{assets_path}/"],
+              check=True,
+              stdout=subprocess.PIPE,
+          )
+          paths = {
+              os.fsdecode(path)
+              for path in result.stdout.split(b"\0")
+              if path
+          }
+          assets = {path for path in paths if not path.endswith(".meta")}
+          metas = paths - assets
+          errors = []
+
+          for asset_path in sorted(assets):
+              if f"{asset_path}.meta" not in metas:
+                  errors.append(f"Missing .meta file for tracked asset: {asset_path}")
+
+          for meta_path in sorted(metas):
+              asset_path = meta_path[:-5]
+              if asset_path in assets:
+                  continue
+              if any(path.startswith(f"{asset_path}/") for path in assets):
+                  continue
+
+              try:
+                  meta_contents = Path(meta_path).read_text(encoding="utf-8")
+              except (OSError, UnicodeError):
+                  meta_contents = ""
+              if any(line.strip() == "folderAsset: yes" for line in meta_contents.splitlines()):
+                  continue
+
+              errors.append(f"Tracked .meta file has no matching asset or folder: {meta_path}")
+
+          if errors:
+              print("Unity asset .meta check failed.", file=sys.stderr)
+              for error in errors:
+                  print(error, file=sys.stderr)
+              sys.exit(1)
+
+          print(f"Unity asset .meta check passed for {assets_path}/.")
+          PY
