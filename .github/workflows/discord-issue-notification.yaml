@@ -28,6 +28,7 @@ jobs:
             }
 
             const { action, issue } = context.payload;
+            const isOpened = action === 'opened';
             const programmer = { type: 'roles', variable: 'DISCORD_PROGRAMMER_ROLE_ID' };
             const illustratorDesigner = { type: 'roles', variable: 'DISCORD_ILLUSTRATOR_DESIGNER_ROLE_ID' };
             const rProduction = { type: 'users', variable: 'DISCORD_R_PRODUCTION_USER_ID' };
@@ -39,7 +40,8 @@ jobs:
               ['documentation', rProduction]
             ]);
 
-            const targets = issue.labels.map(({ name }) => mentionTargetsByLabel.get(name)).filter(Boolean);
+            const labels = isOpened ? issue.labels : [];
+            const targets = labels.map(({ name }) => mentionTargetsByLabel.get(name)).filter(Boolean);
             const mentionIds = { roles: new Set(), users: new Set() };
             for (const { type, variable } of new Set(targets)) {
               const id = process.env[variable]?.trim();
@@ -54,7 +56,7 @@ jobs:
             const users = [...mentionIds.users];
             const mentions = [...roles.map((id) => `<@&${id}>`), ...users.map((id) => `<@${id}>`)];
             const allowedMentions = mentions.length ? { roles, users } : { parse: [] };
-            const heading = action === 'opened'
+            const heading = isOpened
               ? '📌 **新しいタスクが起票されました**'
               : '✅ **タスクがクローズされました**';
 
