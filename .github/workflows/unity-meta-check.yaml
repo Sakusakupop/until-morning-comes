@@ -1,0 +1,88 @@
+name: Check Unity asset metadata
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  unity-meta:
+    name: Unity asset .meta check
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check Unity asset metadata pairs
+        run: |
+          python3 - <<'PY'
+          import os
+          import subprocess
+          import sys
+          from pathlib import Path, PurePosixPath
+
+          def ignored_name(name):
+              return name.startswith(".") or name.endswith("~") or name.lower() == "cvs"
+
+
+          assets_root = PurePosixPath("until-morning-comes/Assets")
+          tracked_paths = subprocess.check_output(
+              ["git", "ls-files", "-z", "--", f"{assets_root}/"]
+          )
+
+          assets = set()
+          folders = set()
+          metadata_targets = set()
+          relative_root = PurePosixPath(".")
+          for raw_path in tracked_paths.split(b"\0"):
+              if not raw_path:
+                  continue
+              path = PurePosixPath(os.fsdecode(raw_path)).relative_to(assets_root)
+              # A visible folder still needs metadata if it only contains a .gitkeep.
+              parent = relative_root
+              for part in path.parts[:-1]:
+                  if ignored_name(part):
+                      break
+                  parent /= part
+                  folders.add(parent)
+              if parent != path.parent:
+                  continue
+
+              is_metadata = path.suffix == ".meta"
+              target = path.with_suffix("") if is_metadata else path
+              if ignored_name(target.name):
+                  continue
+              if not is_metadata and path.suffix.lower() == ".tmp":
+                  continue
+
+              if is_metadata:
+                  metadata_targets.add(target)
+              else:
+                  assets.add(target)
+
+          expected_targets = assets | folders
+          errors = [
+              f"Missing .meta file: {assets_root / target}.meta"
+              for target in sorted(expected_targets - metadata_targets)
+          ]
+          for target in sorted(metadata_targets - expected_targets):
+              meta_path = Path(f"{assets_root / target}.meta")
+              # An empty Unity folder can be represented by its .meta file alone.
+              meta_lines = meta_path.read_bytes().splitlines()
+              if any(line.rstrip() == b"folderAsset: yes" for line in meta_lines):
+                  continue
+              errors.append(f"Orphaned .meta file: {meta_path}")
+
+          if errors:
+              print("Unity asset .meta check failed.", file=sys.stderr)
+              for error in errors:
+                  print(error, file=sys.stderr)
+              sys.exit(1)
+
+          print(f"Unity asset .meta check passed for {assets_root}/.")
+          PY
