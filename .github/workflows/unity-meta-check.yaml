@@ -24,42 +24,59 @@ jobs:
           import os
           import subprocess
           import sys
-          from pathlib import Path
+          from pathlib import Path, PurePosixPath
 
-          assets_path = "until-morning-comes/Assets"
-          result = subprocess.run(
-              ["git", "ls-files", "-z", "--", f"{assets_path}/"],
-              check=True,
-              stdout=subprocess.PIPE,
+          def ignored_name(name):
+              return name.startswith(".") or name.endswith("~") or name.lower() == "cvs"
+
+
+          assets_root = PurePosixPath("until-morning-comes/Assets")
+          tracked_paths = subprocess.check_output(
+              ["git", "ls-files", "-z", "--", f"{assets_root}/"]
           )
-          paths = {
-              os.fsdecode(path)
-              for path in result.stdout.split(b"\0")
-              if path
-          }
-          assets = {path for path in paths if not path.endswith(".meta")}
-          metas = paths - assets
-          errors = []
 
-          for asset_path in sorted(assets):
-              if f"{asset_path}.meta" not in metas:
-                  errors.append(f"Missing .meta file for tracked asset: {asset_path}")
-
-          for meta_path in sorted(metas):
-              asset_path = meta_path[:-5]
-              if asset_path in assets:
+          assets = set()
+          folders = set()
+          metadata_targets = set()
+          relative_root = PurePosixPath(".")
+          for raw_path in tracked_paths.split(b"\0"):
+              if not raw_path:
                   continue
-              if any(path.startswith(f"{asset_path}/") for path in assets):
-                  continue
-
-              try:
-                  meta_contents = Path(meta_path).read_text(encoding="utf-8")
-              except (OSError, UnicodeError):
-                  meta_contents = ""
-              if any(line.strip() == "folderAsset: yes" for line in meta_contents.splitlines()):
+              path = PurePosixPath(os.fsdecode(raw_path)).relative_to(assets_root)
+              # A visible folder still needs metadata if it only contains a .gitkeep.
+              parent = relative_root
+              for part in path.parts[:-1]:
+                  if ignored_name(part):
+                      break
+                  parent /= part
+                  folders.add(parent)
+              if parent != path.parent:
                   continue
 
-              errors.append(f"Tracked .meta file has no matching asset or folder: {meta_path}")
+              is_metadata = path.suffix == ".meta"
+              target = path.with_suffix("") if is_metadata else path
+              if ignored_name(target.name):
+                  continue
+              if not is_metadata and path.suffix.lower() == ".tmp":
+                  continue
+
+              if is_metadata:
+                  metadata_targets.add(target)
+              else:
+                  assets.add(target)
+
+          expected_targets = assets | folders
+          errors = [
+              f"Missing .meta file: {assets_root / target}.meta"
+              for target in sorted(expected_targets - metadata_targets)
+          ]
+          for target in sorted(metadata_targets - expected_targets):
+              meta_path = Path(f"{assets_root / target}.meta")
+              # An empty Unity folder can be represented by its .meta file alone.
+              meta_lines = meta_path.read_bytes().splitlines()
+              if any(line.rstrip() == b"folderAsset: yes" for line in meta_lines):
+                  continue
+              errors.append(f"Orphaned .meta file: {meta_path}")
 
           if errors:
               print("Unity asset .meta check failed.", file=sys.stderr)
@@ -67,5 +84,5 @@ jobs:
                   print(error, file=sys.stderr)
               sys.exit(1)
 
-          print(f"Unity asset .meta check passed for {assets_path}/.")
+          print(f"Unity asset .meta check passed for {assets_root}/.")
           PY
