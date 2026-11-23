@@ -1,0 +1,108 @@
+name: Discord Issue Notification
+
+on:
+  issues:
+    types: [opened, closed]
+
+permissions: {}
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Send Discord notification
+        uses: actions/github-script@v7
+        env:
+          # Discord の「ホラゲータスク起票通知部屋」で作成した Webhook URL。
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_ISSUES_NOTIFY_WEBHOOK_URL }}
+          DISCORD_PROGRAMMER_ROLE_ID: ${{ vars.DISCORD_PROGRAMMER_ROLE_ID }}
+          DISCORD_ILLUSTRATOR_DESIGNER_ROLE_ID: ${{ vars.DISCORD_ILLUSTRATOR_DESIGNER_ROLE_ID }}
+          DISCORD_R_PRODUCTION_USER_ID: ${{ vars.DISCORD_R_PRODUCTION_USER_ID }}
+        with:
+          script: |
+            const webhookUrl = process.env.DISCORD_WEBHOOK_URL;
+            if (!webhookUrl) {
+              core.setFailed('DISCORD_ISSUES_NOTIFY_WEBHOOK_URL secret is not set.');
+              return;
+            }
+
+            const { action, issue } = context.payload;
+            const isOpened = action === 'opened';
+            const programmer = { type: 'roles', variable: 'DISCORD_PROGRAMMER_ROLE_ID' };
+            const illustratorDesigner = { type: 'roles', variable: 'DISCORD_ILLUSTRATOR_DESIGNER_ROLE_ID' };
+            const rProduction = { type: 'users', variable: 'DISCORD_R_PRODUCTION_USER_ID' };
+            const mentionTargetsByLabel = new Map([
+              ['エンジニア', programmer],
+              ['デザイナー', illustratorDesigner],
+              ['CI', rProduction],
+              ['chore', rProduction],
+              ['documentation', rProduction]
+            ]);
+
+            const labels = isOpened ? issue.labels : [];
+            const targets = labels.map(({ name }) => mentionTargetsByLabel.get(name)).filter(Boolean);
+            const mentionIds = { roles: new Set(), users: new Set() };
+            for (const { type, variable } of new Set(targets)) {
+              const id = process.env[variable]?.trim();
+              if (!id || !/^[1-9][0-9]{0,19}$/.test(id)) {
+                core.setFailed(`Set ${variable} to the Discord ID in the repository Actions variables.`);
+                return;
+              }
+              mentionIds[type].add(id);
+            }
+
+            const roles = [...mentionIds.roles];
+            const users = [...mentionIds.users];
+            const mentions = [...roles.map((id) => `<@&${id}>`), ...users.map((id) => `<@${id}>`)];
+            const allowedMentions = mentions.length ? { roles, users } : { parse: [] };
+            const heading = isOpened
+              ? '📌 **新しいタスクが起票されました**'
+              : '✅ **タスクがクローズされました**';
+
+            // タイトルを短く整形し、Issue の内容から Discord メンションが作られないようにする。
+            const titleCharacters = Array.from(issue.title.replace(/\s+/g, ' ').trim());
+            const shortTitle = titleCharacters.length > 300
+              ? `${titleCharacters.slice(0, 300).join('')}…`
+              : titleCharacters.join('');
+            const title = shortTitle.replace(/[\\_*~|`<>\[\]()]/g, '\\$&').replace(/@/g, '@\u200b');
+            const assignees = issue.assignees.map(({ login }) => login).join(', ') || '未割り当て';
+            const content = [
+              heading,
+              mentions.join(' '),
+              `**Issue:** #${issue.number} ${title}`,
+              `**担当者:** ${assignees}`,
+              `<${issue.html_url}>`
+            ].filter(Boolean).join('\n');
+            if (content.length > 2000) {
+              core.setFailed('Discord message exceeds 2000 characters. Reduce the configured mention targets.');
+              return;
+            }
+
+            let response;
+            try {
+              const url = new URL(webhookUrl);
+              url.searchParams.set('wait', 'true');
+              response = await fetch(url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                signal: AbortSignal.timeout(15000),
+                // Discord のサイレント通知フラグは指定しない。
+                body: JSON.stringify({ content, allowed_mentions: allowedMentions })
+              });
+            } catch {
+              core.setFailed('Could not reach Discord. Check the Webhook URL and the Actions run.');
+              return;
+            }
+            if (!response.ok) {
+              core.setFailed(`Discord Webhook returned HTTP ${response.status}.`);
+              return;
+            }
+
+            const message = await response.json();
+            const missingRoles = roles.filter((id) => !message.mention_roles.includes(id));
+            const mentionedUsers = new Set(message.mentions.map(({ id }) => id));
+            const missingUsers = users.filter((id) => !mentionedUsers.has(id));
+            if (missingRoles.length || missingUsers.length) {
+              core.setFailed('Discord posted the message but omitted a mention. Check the target IDs and role mention permissions before rerunning.');
+            }
