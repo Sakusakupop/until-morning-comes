@@ -4,7 +4,7 @@ Unity で作っているゲームのプロジェクトです。
 
 ## 作業を始める
 
-1. Unity Hub で Unity `6000.3.20f1` をインストールします。  
+1. Unity Hub で Unity `6000.3.20f1` をインストールします。（ https://unity.com/ja/releases/editor/whats-new/6000.3.20f1 ）  
 2. Unity Hub から、このリポジトリの `until-morning-comes` フォルダを開きます。  
    `Assets`、`Packages`、`ProjectSettings` が入っているフォルダです。  
 3. 初回起動時は Unity が必要なパッケージを読み込みます。読み込みが終わるまで待ちます。  
